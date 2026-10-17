@@ -13,328 +13,332 @@ namespace ScammerPaybackPopup
     [BepInDependency("org.scam-and-mod-with-friends.swyflib")]
     public class Plugin : BaseUnityPlugin
     {
-        static Plugin Instance = null!;
-        UIDocument? _doc;
-        VisualElement? _root;
-        readonly List<PaybackWindow> _windows = new();
+        internal static Texture2D? TexFace, TexEyes, TexMouth, TexOutline;
+
+        readonly List<PopupWindow> _windows = new();
         static readonly System.Random _rng = new System.Random();
 
-        // Pierogi-isms
-        static readonly string[] _greetings = new[]
+        UIDocument? _doc;
+        VisualElement? _root;
+
+        static readonly string[] _lines = new[]
         {
             "How are you?",
-            "Hello, how are you today?",
-            "Oh hello there, how are you?",
+            "Hello there! How are you?",
             "Well hello! How are you doing?",
         };
         static readonly string[] _hangupLines = new[]
         {
             "You've been scammerpaybacked!",
             "That's a wrap! Pierogi out.",
-            "Refund initiated. Just kidding.",
             "Did you enjoy that? I did.",
         };
 
         void Awake()
         {
-            Instance = this;
             CallEvents.OnCallStarted += OnCallStarted;
             CallEvents.OnCallEnded   += OnCallEnded;
+            StartCoroutine(LoadTextures());
         }
 
-        void OnCallStarted(CallInfo call)
+        IEnumerator LoadTextures()
         {
-            StartCoroutine(SpawnAfterDelay(call, 1f));
+            yield return null;
+            string callers = System.IO.Path.Combine(Application.streamingAssetsPath, "Callers");
+            TexFace    = LoadPng(System.IO.Path.Combine(callers, "Pierogi.png"));
+            TexEyes    = LoadPng(System.IO.Path.Combine(callers, "Normal Eyes.png"));
+            TexMouth   = LoadPng(System.IO.Path.Combine(callers, "Open Mouth.png"));
+            TexOutline = LoadPng(System.IO.Path.Combine(callers, "CallerHead.png"));
         }
 
-        void OnCallEnded(CallInfo call)
+        static Texture2D? LoadPng(string path)
         {
-            foreach (var w in _windows) w.Remove();
-            _windows.Clear();
-        }
-
-        internal static Texture2D? FaceTexture;
-
-        IEnumerator SpawnAfterDelay(CallInfo call, float delay)
-        {
-            yield return new WaitForSeconds(delay);
-            EnsureDoc();
-            if (FaceTexture == null) yield return StartCoroutine(LoadFace());
-            SpawnWindow(call);
-        }
-
-        IEnumerator LoadFace()
-        {
-            yield return null; // one frame defer so we're not blocking Awake
             try
             {
-                string path = System.IO.Path.Combine(Application.streamingAssetsPath, "Callers", "Pierogi.png");
                 byte[] data = System.IO.File.ReadAllBytes(path);
-                var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
-                tex.LoadImage(data);
-                FaceTexture = tex;
-                Log.Info("[Payback] Pierogi face loaded");
+                var t = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                t.LoadImage(data);
+                return t;
             }
-            catch (Exception ex) { Log.Warn($"[Payback] Failed to load Pierogi.png: {ex.Message}"); }
+            catch (Exception ex) { Log.Warn($"[Payback] Load failed {path}: {ex.Message}"); return null; }
+        }
+
+        readonly HashSet<uint> _spawned = new();
+        void OnCallStarted(CallInfo call)
+        {
+            if (_spawned.Contains(call.NetId)) return;
+            _spawned.Add(call.NetId);
+            StartCoroutine(Spawn(call));
+        }
+        void OnCallEnded(CallInfo call)
+        {
+            _spawned.Remove(call.NetId);
+            _windows.RemoveAll(w => w.Call.NetId == call.NetId);
+        }
+
+        IEnumerator Spawn(CallInfo call)
+        {
+            yield return new WaitForSeconds(0.5f);
+
+            // Hang up immediately
+            call.HangUp();
+
+            yield return new WaitForSeconds(0.3f);
+
+            EnsureDoc();
+            float sw = Screen.width, sh = Screen.height;
+            float x = _rng.Next((int)(sw * 0.15f), (int)(sw * 0.5f));
+            float y = _rng.Next((int)(sh * 0.1f),  (int)(sh * 0.5f));
+            x += _windows.Count * 32f;
+            y += _windows.Count * 28f;
+
+            var win = new PopupWindow(
+                call, _root!, x, y,
+                _lines[_rng.Next(_lines.Length)],
+                _hangupLines[_rng.Next(_hangupLines.Length)],
+                this);
+            _windows.Add(win);
         }
 
         void EnsureDoc()
         {
-            if (_doc != null && _doc.rootVisualElement != null) return;
-            var go = new GameObject("ScammerPaybackPopupDoc");
+            if (_doc != null) return;
+
+            // Grab PanelSettings from existing game UIDocument
+            PanelSettings? ps = null;
+            foreach (var existing in FindObjectsOfType<UIDocument>())
+            {
+                if (existing.panelSettings != null) { ps = existing.panelSettings; break; }
+            }
+
+            var go = new GameObject("PaybackUI");
             DontDestroyOnLoad(go);
             _doc = go.AddComponent<UIDocument>();
-            // Sort on top of game UI
+            if (ps != null) _doc.panelSettings = ps;
             _doc.sortingOrder = 9999;
             _root = _doc.rootVisualElement;
             _root.style.position = Position.Absolute;
-            _root.style.left   = 0; _root.style.top    = 0;
-            _root.style.right  = 0; _root.style.bottom = 0;
+            _root.style.left = _root.style.top = _root.style.right = _root.style.bottom = 0;
             _root.pickingMode = PickingMode.Ignore;
         }
 
-        internal void SpawnWindow(CallInfo call)
+        internal void OnClose(PopupWindow closed)
         {
-            // Random screen position, biased towards center
-            float sw = Screen.width;
-            float sh = Screen.height;
-            float x = _rng.Next((int)(sw * 0.1f), (int)(sw * 0.6f));
-            float y = _rng.Next((int)(sh * 0.1f), (int)(sh * 0.6f));
-            // Offset each duplicate so they don't stack exactly
-            x += _windows.Count * 28f;
-            y += _windows.Count * 24f;
-
-            string greeting = _greetings[_rng.Next(_greetings.Length)];
-            string hangup   = _hangupLines[_rng.Next(_hangupLines.Length)];
-
-            var win = new PaybackWindow(call, _root!, x, y, greeting, hangup, this);
-            _windows.Add(win);
-        }
-
-        internal void OnWindowClosed(PaybackWindow win, CallInfo call)
-        {
-            // Don't actually remove — spawn more
-            int spawnCount = Math.Min(_windows.Count + 1, 8); // cap at 8 to avoid madness
-            for (int i = 0; i < spawnCount; i++)
-                SpawnWindow(call);
+            int count = Math.Min(_windows.Count + 1, 8);
+            for (int i = 0; i < count; i++)
+            {
+                float x = _rng.Next(40, Screen.width  - 360);
+                float y = _rng.Next(40, Screen.height - 300);
+                _windows.Add(new PopupWindow(
+                    closed.Call, _root!, x, y,
+                    _lines[_rng.Next(_lines.Length)],
+                    _hangupLines[_rng.Next(_hangupLines.Length)],
+                    this));
+            }
         }
     }
 
-    sealed class PaybackWindow
+    // ── Window ────────────────────────────────────────────────────────────────
+
+    sealed class PopupWindow
     {
+        public readonly CallInfo Call;
         readonly VisualElement _win;
         readonly VisualElement _root;
-        readonly Label _charLabel;
-        readonly CallInfo _call;
+        readonly VisualElement _faceImg;
+        readonly VisualElement _eyesImg;
+        readonly VisualElement _mouthImg;
+        readonly Label _greeting;
         readonly Plugin _plugin;
-        bool _removed;
 
-        // Bouncing character state
-        float _charX, _charY, _vx, _vy;
+        bool   _dragging;
+        float  _dragOffX, _dragOffY, _winX, _winY;
+        float  _faceX, _faceY, _vx, _vy;
+        string _fullText;
+        int    _typingIdx;
+        float  _typingTimer;
+        bool   _typed;
+
         static readonly System.Random _rng = new System.Random();
 
-        static readonly string[] _frames = new[]
+        public PopupWindow(CallInfo call, VisualElement root, float x, float y,
+                           string greeting, string hangupLine, Plugin plugin)
         {
-            "( •_•)",
-            "( •_•)>⌐■-■",
-            "(⌐■_■)",
-            "(⌐■_■) 🕶️",
-            "( •_•)",
-        };
-        int _frame;
-        float _typingTimer;
-        int _typingIdx;
-        string _fullGreeting;
-        bool _typed;
-
-        // Drag state
-        bool _dragging;
-        Vector2 _dragOffset;
-        float _winX, _winY;
-
-        public PaybackWindow(CallInfo call, VisualElement root, float x, float y,
-            string greeting, string hangupLine, Plugin plugin)
-        {
-            _call    = call;
+            Call     = call;
             _root    = root;
             _plugin  = plugin;
-            _fullGreeting = $"{greeting}\n\"How are you, {call.CallerName}?\"";
+            _fullText = $"{greeting}\n\"How are you, {call.CallerName}?\"";
             _winX = x; _winY = y;
 
-            // Window container
+            // ── Outer window ──────────────────────────────────────────────
             _win = new VisualElement();
-            _win.style.position = Position.Absolute;
-            _win.style.left = x; _win.style.top = y;
-            _win.style.width  = 320;
-            _win.style.minHeight = 200;
-            _win.style.backgroundColor = new Color(0.08f, 0.08f, 0.08f, 0.97f);
-            _win.style.borderTopLeftRadius     = 8;
-            _win.style.borderTopRightRadius    = 8;
-            _win.style.borderBottomLeftRadius  = 8;
-            _win.style.borderBottomRightRadius = 8;
-            _win.style.borderTopWidth     = 2;
-            _win.style.borderBottomWidth  = 2;
-            _win.style.borderLeftWidth    = 2;
-            _win.style.borderRightWidth   = 2;
-            _win.style.borderTopColor     = new Color(0.85f, 0.1f, 0.1f);
-            _win.style.borderBottomColor  = new Color(0.85f, 0.1f, 0.1f);
-            _win.style.borderLeftColor    = new Color(0.85f, 0.1f, 0.1f);
-            _win.style.borderRightColor   = new Color(0.85f, 0.1f, 0.1f);
+            _win.style.position  = Position.Absolute;
+            _win.style.left      = x;
+            _win.style.top       = y;
+            _win.style.width     = 340;
+            _win.style.backgroundColor = new Color(0.09f, 0.09f, 0.09f, 0.97f);
+            SetBorder(_win, new Color(0.85f, 0.1f, 0.1f), 2, 10);
 
-            // Title bar
-            var titleBar = new VisualElement();
-            titleBar.style.flexDirection     = FlexDirection.Row;
-            titleBar.style.justifyContent   = Justify.SpaceBetween;
-            titleBar.style.alignItems       = Align.Center;
-            titleBar.style.backgroundColor  = new Color(0.85f, 0.1f, 0.1f);
-            titleBar.style.paddingLeft  = 10;
-            titleBar.style.paddingRight = 6;
-            titleBar.style.paddingTop   = titleBar.style.paddingBottom = 5;
-            titleBar.style.borderTopLeftRadius  = 6;
-            titleBar.style.borderTopRightRadius = 6;
+            // ── Title bar ─────────────────────────────────────────────────
+            var bar = new VisualElement();
+            bar.style.flexDirection  = FlexDirection.Row;
+            bar.style.alignItems     = Align.Center;
+            bar.style.justifyContent = Justify.SpaceBetween;
+            bar.style.backgroundColor = new Color(0.85f, 0.1f, 0.1f);
+            bar.style.paddingLeft = bar.style.paddingRight = 10;
+            bar.style.paddingTop  = bar.style.paddingBottom = 6;
+            bar.style.borderTopLeftRadius = bar.style.borderTopRightRadius = 8;
 
-            var title = new Label("⚠ SCAMMER PAYBACK");
+            var title = new Label("⚠  SCAMMER PAYBACK");
             title.style.color    = Color.white;
             title.style.fontSize = 13;
             title.style.unityFontStyleAndWeight = FontStyle.Bold;
 
-            var closeBtn = new Button();
-            closeBtn.text = "✕";
-            closeBtn.style.color           = Color.white;
-            closeBtn.style.backgroundColor = new Color(0.6f, 0.05f, 0.05f);
-            closeBtn.style.width  = 24;
-            closeBtn.style.height = 24;
-            closeBtn.style.fontSize = 12;
-            closeBtn.style.borderTopLeftRadius = closeBtn.style.borderTopRightRadius =
-            closeBtn.style.borderBottomLeftRadius = closeBtn.style.borderBottomRightRadius = 4;
-            closeBtn.clicked += OnClose;
+            var close = new Button();
+            close.text = "✕";
+            SetBorder(close, new Color(0.6f, 0.05f, 0.05f), 0, 4);
+            close.style.backgroundColor = new Color(0.6f, 0.05f, 0.05f);
+            close.style.color  = Color.white;
+            close.style.width  = 26;
+            close.style.height = 26;
+            close.style.fontSize = 13;
+            close.clicked += () => _plugin.OnClose(this);
 
-            titleBar.Add(title);
-            titleBar.Add(closeBtn);
-            _win.Add(titleBar);
+            bar.Add(title); bar.Add(close);
+            _win.Add(bar);
 
             // Drag on title bar
-            titleBar.RegisterCallback<MouseDownEvent>(e => { _dragging = true; _dragOffset = new Vector2(_winX - e.mousePosition.x, _winY - e.mousePosition.y); e.StopPropagation(); });
-            _win.RegisterCallback<MouseMoveEvent>(e => { if (!_dragging) return; _winX = e.mousePosition.x + _dragOffset.x; _winY = e.mousePosition.y + _dragOffset.y; _win.style.left = _winX; _win.style.top = _winY; });
+            bar.RegisterCallback<MouseDownEvent>(e =>
+            {
+                _dragging = true;
+                _dragOffX = _winX - e.mousePosition.x;
+                _dragOffY = _winY - e.mousePosition.y;
+                e.StopPropagation();
+            });
+            _win.RegisterCallback<MouseMoveEvent>(e =>
+            {
+                if (!_dragging) return;
+                _winX = e.mousePosition.x + _dragOffX;
+                _winY = e.mousePosition.y + _dragOffY;
+                _win.style.left = _winX;
+                _win.style.top  = _winY;
+            });
             _win.RegisterCallback<MouseUpEvent>(_ => _dragging = false);
 
-            // Face area — bouncing Pierogi head
-            var charArea = new VisualElement();
-            charArea.style.height = 140;
-            charArea.style.overflow = Overflow.Hidden;
-            charArea.style.position = Position.Relative;
-            charArea.style.borderBottomWidth = 1;
-            charArea.style.borderBottomColor = new Color(0.85f, 0.1f, 0.1f, 0.4f);
-            charArea.style.backgroundColor = new Color(0.05f, 0.05f, 0.05f);
+            // ── Face area ─────────────────────────────────────────────────
+            var faceArea = new VisualElement();
+            faceArea.style.height = 160;
+            faceArea.style.overflow = Overflow.Hidden;
+            faceArea.style.position = Position.Relative;
+            faceArea.style.backgroundColor = new Color(0.06f, 0.06f, 0.06f);
+            faceArea.style.borderBottomWidth = 1;
+            faceArea.style.borderBottomColor = new Color(0.85f, 0.1f, 0.1f, 0.5f);
 
-            // Face image (bouncing)
-            _charLabel = new Label(); // kept for Tick() compat — unused visually
-            var faceEl = new VisualElement();
-            faceEl.name = "face";
-            faceEl.style.position = Position.Absolute;
-            faceEl.style.width  = 110;
-            faceEl.style.height = 110;
-            faceEl.style.backgroundSize = new BackgroundSize(BackgroundSizeType.Contain);
-            if (Plugin.FaceTexture != null)
-                faceEl.style.backgroundImage = new StyleBackground(Plugin.FaceTexture);
-            else
+            // Layered face (same as game: head fill → eyes → mouth → outline ring)
+            _faceImg  = FaceLayer(Plugin.TexFace);
+            _eyesImg  = FaceLayer(Plugin.TexEyes);
+            _mouthImg = FaceLayer(Plugin.TexMouth);
+
+            _faceX = 95; _faceY = 10; // center horizontally in 340px window
+            foreach (var el in new[] { _faceImg, _eyesImg, _mouthImg })
             {
-                // Fallback: ASCII label
-                _charLabel.text = _frames[0];
-                _charLabel.style.position = Position.Absolute;
-                _charLabel.style.color    = new Color(1f, 0.85f, 0.1f);
-                _charLabel.style.fontSize = 20;
-                _charLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
-                charArea.Add(_charLabel);
+                el.style.left = _faceX;
+                el.style.top  = _faceY;
+                faceArea.Add(el);
             }
-            _charX = 10; _charY = 10;
-            faceEl.style.left = _charX;
-            faceEl.style.top  = _charY;
-            _vx = (float)(_rng.NextDouble() * 60 + 30) * (_rng.Next(2) == 0 ? 1 : -1);
-            _vy = (float)(_rng.NextDouble() * 40 + 20) * (_rng.Next(2) == 0 ? 1 : -1);
 
-            charArea.Add(faceEl);
-            _win.Add(charArea);
+            _vx = (float)(_rng.NextDouble() * 55 + 25) * (_rng.Next(2) == 0 ? 1 : -1);
+            _vy = (float)(_rng.NextDouble() * 30 + 15) * (_rng.Next(2) == 0 ? 1 : -1);
 
-            // Typing greeting text
-            var greeting_lbl = new Label("");
-            greeting_lbl.name = "greeting";
-            greeting_lbl.style.color   = new Color(0.9f, 0.9f, 0.9f);
-            greeting_lbl.style.fontSize = 13;
-            greeting_lbl.style.whiteSpace = WhiteSpace.Normal;
-            greeting_lbl.style.paddingLeft = greeting_lbl.style.paddingRight = 12;
-            greeting_lbl.style.paddingTop  = greeting_lbl.style.paddingBottom = 10;
+            _win.Add(faceArea);
 
-            _win.Add(greeting_lbl);
+            // ── Greeting label ────────────────────────────────────────────
+            _greeting = new Label("");
+            _greeting.style.color     = new Color(0.92f, 0.92f, 0.92f);
+            _greeting.style.fontSize  = 13;
+            _greeting.style.whiteSpace = WhiteSpace.Normal;
+            _greeting.style.paddingLeft = _greeting.style.paddingRight = 12;
+            _greeting.style.paddingTop  = _greeting.style.paddingBottom = 10;
+            _win.Add(_greeting);
 
-            // Hang up button
-            var hangupBtn = new Button();
-            hangupBtn.text = "HANG UP";
-            hangupBtn.style.backgroundColor = new Color(0.85f, 0.1f, 0.1f);
-            hangupBtn.style.color           = Color.white;
-            hangupBtn.style.marginLeft      = 12;
-            hangupBtn.style.marginRight     = 12;
-            hangupBtn.style.marginBottom    = 12;
-            hangupBtn.style.paddingTop      = hangupBtn.style.paddingBottom = 8;
-            hangupBtn.style.fontSize        = 14;
-            hangupBtn.style.unityFontStyleAndWeight = FontStyle.Bold;
-            hangupBtn.style.borderTopLeftRadius     = 4;
-            hangupBtn.style.borderTopRightRadius    = 4;
-            hangupBtn.style.borderBottomLeftRadius  = 4;
-            hangupBtn.style.borderBottomRightRadius = 4;
-            hangupBtn.clicked += () =>
+            // ── Hang up button ────────────────────────────────────────────
+            var hangup = new Button();
+            hangup.text = "HANG UP";
+            hangup.style.backgroundColor = new Color(0.85f, 0.1f, 0.1f);
+            hangup.style.color  = Color.white;
+            hangup.style.fontSize = 14;
+            hangup.style.unityFontStyleAndWeight = FontStyle.Bold;
+            hangup.style.marginLeft = hangup.style.marginRight = 12;
+            hangup.style.marginBottom = 12;
+            hangup.style.paddingTop   = hangup.style.paddingBottom = 8;
+            SetBorder(hangup, new Color(0.85f, 0.1f, 0.1f), 0, 4);
+            hangup.clicked += () =>
             {
                 call.HangUp();
-                greeting_lbl.text = hangupLine;
+                _greeting.text = hangupLine;
+                _typed = true;
             };
-            _win.Add(hangupBtn);
+            _win.Add(hangup);
 
             root.Add(_win);
 
-            // Kick off animation via UIElements IVisualElementScheduler
-            _win.schedule.Execute(Tick).Every(33); // ~30fps
+            // Animate
+            _win.schedule.Execute(Tick).Every(33);
+        }
+
+        static VisualElement FaceLayer(Texture2D? tex)
+        {
+            var el = new VisualElement();
+            el.style.position = Position.Absolute;
+            el.style.width    = 130;
+            el.style.height   = 130;
+            el.style.backgroundSize = new BackgroundSize(BackgroundSizeType.Contain);
+            if (tex != null)
+                el.style.backgroundImage = new StyleBackground(tex);
+            return el;
+        }
+
+        static void SetBorder(VisualElement el, Color c, float width, float radius)
+        {
+            el.style.borderTopWidth = el.style.borderBottomWidth =
+            el.style.borderLeftWidth = el.style.borderRightWidth = width;
+            el.style.borderTopColor = el.style.borderBottomColor =
+            el.style.borderLeftColor = el.style.borderRightColor = c;
+            el.style.borderTopLeftRadius = el.style.borderTopRightRadius =
+            el.style.borderBottomLeftRadius = el.style.borderBottomRightRadius = radius;
         }
 
         void Tick()
         {
-            if (_removed) return;
             float dt = 0.033f;
 
-            // Bounce face
-            _charX += _vx * dt;
-            _charY += _vy * dt;
-            if (_charX < 0)   { _charX = 0;   _vx = Mathf.Abs(_vx); }
-            if (_charX > 200) { _charX = 200;  _vx = -Mathf.Abs(_vx); }
-            if (_charY < 0)   { _charY = 0;    _vy = Mathf.Abs(_vy); }
-            if (_charY > 20)  { _charY = 20;   _vy = -Mathf.Abs(_vy); }
-            var faceEl = _win.Q<VisualElement>("face");
-            if (faceEl != null) { faceEl.style.left = _charX; faceEl.style.top = _charY; }
+            // Bounce all face layers together
+            _faceX += _vx * dt;
+            _faceY += _vy * dt;
+            if (_faceX < 5)   { _faceX = 5;   _vx =  Mathf.Abs(_vx); }
+            if (_faceX > 195) { _faceX = 195;  _vx = -Mathf.Abs(_vx); }
+            if (_faceY < 5)   { _faceY = 5;    _vy =  Mathf.Abs(_vy); }
+            if (_faceY > 25)  { _faceY = 25;   _vy = -Mathf.Abs(_vy); }
+            foreach (var el in new[] { _faceImg, _eyesImg, _mouthImg })
+            {
+                el.style.left = _faceX;
+                el.style.top  = _faceY;
+            }
 
-            // Typewriter greeting
+            // Typewriter
             if (!_typed)
             {
                 _typingTimer += dt;
                 if (_typingTimer > 0.045f)
                 {
                     _typingTimer = 0;
-                    _typingIdx = Math.Min(_typingIdx + 1, _fullGreeting.Length);
-                    var lbl = _win.Q<Label>("greeting");
-                    if (lbl != null) lbl.text = _fullGreeting.Substring(0, _typingIdx);
-                    if (_typingIdx >= _fullGreeting.Length) _typed = true;
+                    _typingIdx = Math.Min(_typingIdx + 1, _fullText.Length);
+                    _greeting.text = _fullText.Substring(0, _typingIdx);
+                    if (_typingIdx >= _fullText.Length) _typed = true;
                 }
             }
         }
 
-        void OnClose()
-        {
-            // "Close" = spawn more, leave this one
-            _plugin.OnWindowClosed(this, _call);
-        }
-
-        public void Remove()
-        {
-            _removed = true;
-            _root.Remove(_win);
-        }
+        public void Remove() => _root.Remove(_win);
     }
 }
