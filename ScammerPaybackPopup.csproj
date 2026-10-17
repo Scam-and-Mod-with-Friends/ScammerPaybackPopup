@@ -24,6 +24,10 @@
       <HintPath>$(GAME_DIR)/Scam With Your Friends_Data/Managed/UnityEngine.UIElementsModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="UnityEngine.ImageConversionModule">
+      <HintPath>$(GAME_DIR)/Scam With Your Friends_Data/Managed/UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="UnityEngine.IMGUIModule">
       <HintPath>$(GAME_DIR)/Scam With Your Friends_Data/Managed/UnityEngine.IMGUIModule.dll</HintPath>
       <Private>false</Private>

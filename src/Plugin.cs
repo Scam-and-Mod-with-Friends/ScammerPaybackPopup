@@ -53,11 +53,29 @@ namespace ScammerPaybackPopup
             _windows.Clear();
         }
 
+        internal static Texture2D? FaceTexture;
+
         IEnumerator SpawnAfterDelay(CallInfo call, float delay)
         {
             yield return new WaitForSeconds(delay);
             EnsureDoc();
+            if (FaceTexture == null) yield return StartCoroutine(LoadFace());
             SpawnWindow(call);
+        }
+
+        IEnumerator LoadFace()
+        {
+            yield return null; // one frame defer so we're not blocking Awake
+            try
+            {
+                string path = System.IO.Path.Combine(Application.streamingAssetsPath, "Callers", "Pierogi.png");
+                byte[] data = System.IO.File.ReadAllBytes(path);
+                var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                tex.LoadImage(data);
+                FaceTexture = tex;
+                Log.Info("[Payback] Pierogi face loaded");
+            }
+            catch (Exception ex) { Log.Warn($"[Payback] Failed to load Pierogi.png: {ex.Message}"); }
         }
 
         void EnsureDoc()
@@ -124,7 +142,6 @@ namespace ScammerPaybackPopup
             "( •_•)",
         };
         int _frame;
-        float _frameTimer;
         float _typingTimer;
         int _typingIdx;
         string _fullGreeting;
@@ -201,26 +218,42 @@ namespace ScammerPaybackPopup
             _win.RegisterCallback<MouseMoveEvent>(e => { if (!_dragging) return; _winX = e.mousePosition.x + _dragOffset.x; _winY = e.mousePosition.y + _dragOffset.y; _win.style.left = _winX; _win.style.top = _winY; });
             _win.RegisterCallback<MouseUpEvent>(_ => _dragging = false);
 
-            // Character area (bouncing)
+            // Face area — bouncing Pierogi head
             var charArea = new VisualElement();
-            charArea.style.height = 90;
+            charArea.style.height = 140;
             charArea.style.overflow = Overflow.Hidden;
             charArea.style.position = Position.Relative;
             charArea.style.borderBottomWidth = 1;
             charArea.style.borderBottomColor = new Color(0.85f, 0.1f, 0.1f, 0.4f);
+            charArea.style.backgroundColor = new Color(0.05f, 0.05f, 0.05f);
 
-            _charLabel = new Label(_frames[0]);
-            _charLabel.style.position = Position.Absolute;
-            _charLabel.style.color    = new Color(1f, 0.85f, 0.1f);
-            _charLabel.style.fontSize = 20;
-            _charLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
-            _charX = 10; _charY = 20;
-            _charLabel.style.left = _charX;
-            _charLabel.style.top  = _charY;
-            _vx = (float)(_rng.NextDouble() * 80 + 40) * (_rng.Next(2) == 0 ? 1 : -1);
-            _vy = (float)(_rng.NextDouble() * 60 + 30) * (_rng.Next(2) == 0 ? 1 : -1);
+            // Face image (bouncing)
+            _charLabel = new Label(); // kept for Tick() compat — unused visually
+            var faceEl = new VisualElement();
+            faceEl.name = "face";
+            faceEl.style.position = Position.Absolute;
+            faceEl.style.width  = 110;
+            faceEl.style.height = 110;
+            faceEl.style.backgroundSize = new BackgroundSize(BackgroundSizeType.Contain);
+            if (Plugin.FaceTexture != null)
+                faceEl.style.backgroundImage = new StyleBackground(Plugin.FaceTexture);
+            else
+            {
+                // Fallback: ASCII label
+                _charLabel.text = _frames[0];
+                _charLabel.style.position = Position.Absolute;
+                _charLabel.style.color    = new Color(1f, 0.85f, 0.1f);
+                _charLabel.style.fontSize = 20;
+                _charLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
+                charArea.Add(_charLabel);
+            }
+            _charX = 10; _charY = 10;
+            faceEl.style.left = _charX;
+            faceEl.style.top  = _charY;
+            _vx = (float)(_rng.NextDouble() * 60 + 30) * (_rng.Next(2) == 0 ? 1 : -1);
+            _vy = (float)(_rng.NextDouble() * 40 + 20) * (_rng.Next(2) == 0 ? 1 : -1);
 
-            charArea.Add(_charLabel);
+            charArea.Add(faceEl);
             _win.Add(charArea);
 
             // Typing greeting text
@@ -267,24 +300,15 @@ namespace ScammerPaybackPopup
             if (_removed) return;
             float dt = 0.033f;
 
-            // Bounce character
+            // Bounce face
             _charX += _vx * dt;
             _charY += _vy * dt;
             if (_charX < 0)   { _charX = 0;   _vx = Mathf.Abs(_vx); }
-            if (_charX > 260) { _charX = 260;  _vx = -Mathf.Abs(_vx); }
+            if (_charX > 200) { _charX = 200;  _vx = -Mathf.Abs(_vx); }
             if (_charY < 0)   { _charY = 0;    _vy = Mathf.Abs(_vy); }
-            if (_charY > 60)  { _charY = 60;   _vy = -Mathf.Abs(_vy); }
-            _charLabel.style.left = _charX;
-            _charLabel.style.top  = _charY;
-
-            // Cycle frame
-            _frameTimer += dt;
-            if (_frameTimer > 0.35f)
-            {
-                _frameTimer = 0;
-                _frame = (_frame + 1) % _frames.Length;
-                _charLabel.text = _frames[_frame];
-            }
+            if (_charY > 20)  { _charY = 20;   _vy = -Mathf.Abs(_vy); }
+            var faceEl = _win.Q<VisualElement>("face");
+            if (faceEl != null) { faceEl.style.left = _charX; faceEl.style.top = _charY; }
 
             // Typewriter greeting
             if (!_typed)
